@@ -1,6 +1,7 @@
 name: docmost-sync
-# Copie l'espace Docmost « VT » (veille) dans veille/, chaque nuit et à la demande (onglet Actions › Run workflow).
-# Sens unique, de Docmost vers Git : on écrit dans Docmost, jamais dans veille/ (le passage suivant l'écrase).
+# Copie l'espace Docmost « VT » (veille) sur la branche « veille », chaque nuit et à la demande (onglet Actions › Run workflow).
+# Sens unique, de Docmost vers Git : on écrit dans Docmost, jamais sur cette branche (le passage suivant l'écrase).
+# Branche à part : main est protégée (PR et relecture obligatoires) et GitHub n'accorde pas d'exception à Actions.
 
 on:
   schedule:
@@ -21,6 +22,11 @@ jobs:
       DEST: veille
     steps:
       - uses: actions/checkout@v4
+
+      - name: Se place sur la branche veille
+        run: |
+          if git fetch -q origin veille; then git checkout -q -B veille FETCH_HEAD
+          else git checkout -q --orphan veille && git rm -rqf .; fi
 
       - name: Exporte l'espace depuis Docmost
         env:
@@ -54,4 +60,4 @@ jobs:
           git diff --cached --quiet && { echo "Rien de nouveau dans Docmost."; exit 0; }
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -qm "docs: synchronise la veille depuis Docmost ($(date -u +%F))"
-          git push
+          git push origin veille
