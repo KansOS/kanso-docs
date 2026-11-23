@@ -30,16 +30,23 @@ jobs:
           set -euo pipefail
           jar=$(mktemp)
           api() { curl -sSf -b "$jar" -c "$jar" -H 'Content-Type: application/json' -d "$2" "$DOCMOST_URL/api/$1" "${@:3}"; }
+          echo "Connexion à Docmost…"
           api auth/login "$(jq -n --arg e "$DOCMOST_EMAIL" --arg p "$DOCMOST_PASSWORD" '{email: $e, password: $p}')" -o /dev/null
           space=$(api spaces/ '{"limit": 100}' | jq -r --arg s "$SPACE_SLUG" '.data.items[] | select((.slug | ascii_downcase) == ($s | ascii_downcase)) | .id')
           [ -n "$space" ] || { echo "Espace $SPACE_SLUG introuvable pour ce compte."; exit 1; }
-          api spaces/export "$(jq -n --arg id "$space" '{spaceId: $id, format: "markdown", includeAttachments: true}')" -o export.zip
-          rm -rf "$DEST" tmp && mkdir -p "$DEST" tmp
-          unzip -q export.zip -d tmp
-          # ponytail: si le zip a un seul dossier racine, on en prend le contenu
-          src=tmp; [ "$(ls -A tmp | wc -l)" -eq 1 ] && [ -d "tmp/$(ls -A tmp)" ] && src="tmp/$(ls -A tmp)"
-          cp -R "$src"/. "$DEST"/
-          rm -rf tmp export.zip
+          echo "Espace $SPACE_SLUG trouvé."
+          # Export page par page : exporter l'espace entier exige d'en être admin, une page se contente de la lecture.
+          pages=$(api pages/sidebar-pages "$(jq -n --arg id "$space" '{spaceId: $id, limit: 100}')")
+          [ "$(jq -r '.data.meta.hasNextPage' <<<"$pages")" = "false" ] || { echo "Plus de 100 pages racines : ajouter la pagination."; exit 1; }
+          rm -rf "$DEST" && mkdir -p "$DEST"
+          jq -c '.data.items[] | {id, title}' <<<"$pages" | while read -r p; do
+            id=$(jq -r .id <<<"$p"); title=$(jq -r '.title // ""' <<<"$p" | tr '/' '-')
+            echo "Export : $title"
+            api pages/export "$(jq -n --arg id "$id" '{pageId: $id, format: "markdown", includeChildren: true, includeAttachments: true}')" -o page.bin
+            # avec sous-pages ou pièces jointes : un zip ; sinon : le .md seul
+            if [ "$(head -c 2 page.bin)" = "PK" ]; then unzip -qo page.bin -d "$DEST"; else mv page.bin "$DEST/${title:-sans-titre}.md"; fi
+          done
+          rm -f page.bin
 
       - name: Commite s'il y a du nouveau
         run: |
