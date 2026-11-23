@@ -2,6 +2,7 @@ name: docmost-sync
 # Copie l'espace Docmost « VT » (veille) sur la branche « veille », chaque nuit et à la demande (onglet Actions › Run workflow).
 # Sens unique, de Docmost vers Git : on écrit dans Docmost, jamais sur cette branche (le passage suivant l'écrase).
 # Branche à part : main est protégée (PR et relecture obligatoires) et GitHub n'accorde pas d'exception à Actions.
+# Sur la branche, toutes les pages sont à plat à la racine, et leurs pièces jointes dans assets/.
 
 on:
   schedule:
@@ -19,9 +20,8 @@ jobs:
     env:
       DOCMOST_URL: https://docs.kansos.org
       SPACE_SLUG: VT
-      DEST: veille
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Se place sur la branche veille
         run: |
@@ -34,6 +34,7 @@ jobs:
           DOCMOST_PASSWORD: ${{ secrets.DOCMOST_PASSWORD }}
         run: |
           set -euo pipefail
+          EXPORT="$RUNNER_TEMP/export"
           jar=$(mktemp)
           api() { curl -sSf -b "$jar" -c "$jar" -H 'Content-Type: application/json' -d "$2" "$DOCMOST_URL/api/$1" "${@:3}"; }
           echo "Connexion à Docmost…"
@@ -44,20 +45,66 @@ jobs:
           # Export page par page : exporter l'espace entier exige d'en être admin, une page se contente de la lecture.
           pages=$(api pages/sidebar-pages "$(jq -n --arg id "$space" '{spaceId: $id, limit: 100}')")
           [ "$(jq -r '.data.meta.hasNextPage' <<<"$pages")" = "false" ] || { echo "Plus de 100 pages racines : ajouter la pagination."; exit 1; }
-          rm -rf "$DEST" && mkdir -p "$DEST"
+          mkdir -p "$EXPORT"
           jq -c '.data.items[] | {id, title}' <<<"$pages" | while read -r p; do
             id=$(jq -r .id <<<"$p"); title=$(jq -r '.title // ""' <<<"$p" | tr '/' '-')
             echo "Export : $title"
-            api pages/export "$(jq -n --arg id "$id" '{pageId: $id, format: "markdown", includeChildren: true, includeAttachments: true}')" -o page.bin
+            api pages/export "$(jq -n --arg id "$id" '{pageId: $id, format: "markdown", includeChildren: true, includeAttachments: true}')" -o "$RUNNER_TEMP/page.bin"
             # avec sous-pages ou pièces jointes : un zip ; sinon : le .md seul
-            if [ "$(head -c 2 page.bin)" = "PK" ]; then unzip -qo page.bin -d "$DEST"; else mv page.bin "$DEST/${title:-sans-titre}.md"; fi
+            if [ "$(head -c 2 "$RUNNER_TEMP/page.bin")" = "PK" ]; then unzip -qo "$RUNNER_TEMP/page.bin" -d "$EXPORT"
+            else mv "$RUNNER_TEMP/page.bin" "$EXPORT/${title:-sans-titre}.md"; fi
           done
-          # l'heure d'export (exportedAt) change à chaque passage : sans ça, un commit chaque nuit même sans nouvelle page
-          rm -f page.bin "$DEST/docmost-metadata.json"
+
+      - name: Met les pages à plat
+        run: |
+          git rm -rq --ignore-unmatch -- .
+          python3 - "$RUNNER_TEMP/export" . <<'PY'
+          # Toutes les pages à la racine, toutes les pièces jointes dans assets/, liens réécrits en conséquence.
+          import os, re, shutil, sys
+          from urllib.parse import quote, unquote
+          src, dst = sys.argv[1], sys.argv[2]
+          pages, assets, taken = {}, {}, set()
+
+          def unique(name, parent):
+              if name in taken:
+                  name = f"{parent} - {name}"  # ponytail: deux pages au même titre dans deux dossiers
+              taken.add(name)
+              return name
+
+          for root, _, files in os.walk(src):
+              for f in sorted(files):
+                  if f == "docmost-metadata.json":  # contient l'heure d'export : un commit chaque nuit sinon
+                      continue
+                  path = os.path.join(root, f)
+                  if f.endswith(".md"):
+                      pages[path] = unique(f, os.path.basename(root))
+                  else:
+                      assets[path] = "assets/" + unique(f, os.path.basename(root))
+
+          def relink(match, here):
+              target = match.group(2)
+              if re.match(r"^([a-z]+:|#|/)", target):
+                  return match.group(0)
+              path, _, anchor = target.partition("#")
+              new = assets.get(os.path.normpath(os.path.join(here, unquote(path)))) or pages.get(os.path.normpath(os.path.join(here, unquote(path))))
+              if not new:
+                  return match.group(0)
+              return match.group(1) + quote(new) + ("#" + anchor if anchor else "") + match.group(3)
+
+          if assets:
+              os.makedirs(os.path.join(dst, "assets"), exist_ok=True)
+          for path, name in assets.items():
+              shutil.copy2(path, os.path.join(dst, name))
+          for path, name in pages.items():
+              text = open(path, encoding="utf-8").read()
+              text = re.sub(r"(\]\()([^)\s]+)(\))", lambda m: relink(m, os.path.dirname(path)), text)
+              open(os.path.join(dst, name), "w", encoding="utf-8").write(text)
+          print(f"{len(pages)} pages, {len(assets)} pièces jointes")
+          PY
 
       - name: Commite s'il y a du nouveau
         run: |
-          git add -A "$DEST"
+          git add -A .
           git diff --cached --quiet && { echo "Rien de nouveau dans Docmost."; exit 0; }
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -qm "docs: synchronise la veille depuis Docmost ($(date -u +%F))"
