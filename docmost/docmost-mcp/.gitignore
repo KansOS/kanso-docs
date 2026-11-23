@@ -1,6 +1,0 @@
-.env
-*.token
-*.cookie
-node_modules/
-dist/
-start.sh
