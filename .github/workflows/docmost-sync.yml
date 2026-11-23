@@ -1,8 +1,8 @@
 name: docmost-sync
-# Copie l'espace Docmost « VT » (veille) sur la branche « veille », chaque nuit et à la demande (onglet Actions › Run workflow).
-# Sens unique, de Docmost vers Git : on écrit dans Docmost, jamais sur cette branche (le passage suivant l'écrase).
-# Branche à part : main est protégée (PR et relecture obligatoires) et GitHub n'accorde pas d'exception à Actions.
-# Sur la branche, toutes les pages sont à plat à la racine, et leurs pièces jointes dans assets/.
+# Copie l'espace Docmost « VT » (veille) dans veille/ sur main, chaque nuit et à la demande (onglet Actions › Run workflow).
+# Sens unique, de Docmost vers Git : on écrit dans Docmost, jamais dans veille/ (le passage suivant l'écrase).
+# Toutes les pages sont à plat dans veille/, leurs pièces jointes dans veille/assets/.
+# main est protégée (PR obligatoire) : le bot pousse avec la clé de déploiement SYNC_DEPLOY_KEY, seule exception de la règle.
 
 on:
   schedule:
@@ -22,11 +22,9 @@ jobs:
       SPACE_SLUG: VT
     steps:
       - uses: actions/checkout@v7
-
-      - name: Se place sur la branche veille
-        run: |
-          if git fetch -q origin veille; then git checkout -q -B veille FETCH_HEAD
-          else git checkout -q --orphan veille && git rm -rqf .; fi
+        with:
+          ref: main # toujours main, même lancé depuis une autre branche : seul veille/ part sur main
+          ssh-key: ${{ secrets.SYNC_DEPLOY_KEY }}
 
       - name: Exporte l'espace depuis Docmost
         env:
@@ -57,12 +55,13 @@ jobs:
 
       - name: Met les pages à plat
         run: |
-          git rm -rq --ignore-unmatch -- .
-          python3 - "$RUNNER_TEMP/export" . <<'PY'
+          git rm -rq --ignore-unmatch -- veille
+          python3 - "$RUNNER_TEMP/export" veille <<'PY'
           # Toutes les pages à la racine, toutes les pièces jointes dans assets/, liens réécrits en conséquence.
           import os, re, shutil, sys
           from urllib.parse import quote, unquote
           src, dst = sys.argv[1], sys.argv[2]
+          os.makedirs(dst, exist_ok=True)
           pages, assets, taken = {}, {}, set()
 
           def unique(name, parent):
@@ -104,8 +103,8 @@ jobs:
 
       - name: Commite s'il y a du nouveau
         run: |
-          git add -A .
+          git add -A veille
           git diff --cached --quiet && { echo "Rien de nouveau dans Docmost."; exit 0; }
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -qm "docs: synchronise la veille depuis Docmost ($(date -u +%F))"
-          git push origin veille
+          git push origin HEAD:main
