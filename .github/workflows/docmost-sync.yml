@@ -52,7 +52,8 @@ jobs:
             # avec sous-pages ou pièces jointes : un zip ; sinon : le .md seul
             if [ "$(head -c 2 page.bin)" = "PK" ]; then unzip -qo page.bin -d "$DEST"; else mv page.bin "$DEST/${title:-sans-titre}.md"; fi
           done
-          rm -f page.bin
+          # l'heure d'export (exportedAt) change à chaque passage : sans ça, un commit chaque nuit même sans nouvelle page
+          rm -f page.bin "$DEST/docmost-metadata.json"
 
       - name: Commite s'il y a du nouveau
         run: |
