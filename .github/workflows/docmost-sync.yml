@@ -1,0 +1,50 @@
+name: docmost-sync
+# Copie l'espace Docmost « VT » (veille) dans veille/, chaque nuit et à la demande (onglet Actions › Run workflow).
+# Sens unique, de Docmost vers Git : on écrit dans Docmost, jamais dans veille/ (le passage suivant l'écrase).
+
+on:
+  schedule:
+    - cron: "0 23 * * *" # 00 h à Paris en hiver, 01 h en été : GitHub ne connaît que l'heure UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: docmost-sync
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      DOCMOST_URL: https://docs.kansos.org
+      SPACE_SLUG: VT
+      DEST: veille
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exporte l'espace depuis Docmost
+        env:
+          DOCMOST_EMAIL: ${{ secrets.DOCMOST_EMAIL }}
+          DOCMOST_PASSWORD: ${{ secrets.DOCMOST_PASSWORD }}
+        run: |
+          set -euo pipefail
+          jar=$(mktemp)
+          api() { curl -sSf -b "$jar" -c "$jar" -H 'Content-Type: application/json' -d "$2" "$DOCMOST_URL/api/$1" "${@:3}"; }
+          api auth/login "$(jq -n --arg e "$DOCMOST_EMAIL" --arg p "$DOCMOST_PASSWORD" '{email: $e, password: $p}')" -o /dev/null
+          space=$(api spaces/ '{"limit": 100}' | jq -r --arg s "$SPACE_SLUG" '.data.items[] | select((.slug | ascii_downcase) == ($s | ascii_downcase)) | .id')
+          [ -n "$space" ] || { echo "Espace $SPACE_SLUG introuvable pour ce compte."; exit 1; }
+          api spaces/export "$(jq -n --arg id "$space" '{spaceId: $id, format: "markdown", includeAttachments: true}')" -o export.zip
+          rm -rf "$DEST" tmp && mkdir -p "$DEST" tmp
+          unzip -q export.zip -d tmp
+          # ponytail: si le zip a un seul dossier racine, on en prend le contenu
+          src=tmp; [ "$(ls -A tmp | wc -l)" -eq 1 ] && [ -d "tmp/$(ls -A tmp)" ] && src="tmp/$(ls -A tmp)"
+          cp -R "$src"/. "$DEST"/
+          rm -rf tmp export.zip
+
+      - name: Commite s'il y a du nouveau
+        run: |
+          git add -A "$DEST"
+          git diff --cached --quiet && { echo "Rien de nouveau dans Docmost."; exit 0; }
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "docs: synchronise la veille depuis Docmost ($(date -u +%F))"
+          git push
