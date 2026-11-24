@@ -49,7 +49,8 @@ jobs:
             echo "Export : $title"
             api pages/export "$(jq -n --arg id "$id" '{pageId: $id, format: "markdown", includeChildren: true, includeAttachments: true}')" -o "$RUNNER_TEMP/page.bin"
             # avec sous-pages ou pièces jointes : un zip ; sinon : le .md seul
-            if [ "$(head -c 2 "$RUNNER_TEMP/page.bin")" = "PK" ]; then unzip -qo "$RUNNER_TEMP/page.bin" -d "$EXPORT"
+            # Docmost range les pièces jointes sous un chemin absolu (/files/…) : unzip les remet sous $EXPORT et répond 1 (simple avertissement)
+            if [ "$(head -c 2 "$RUNNER_TEMP/page.bin")" = "PK" ]; then unzip -qo "$RUNNER_TEMP/page.bin" -d "$EXPORT" || [ $? -eq 1 ]
             else mv "$RUNNER_TEMP/page.bin" "$EXPORT/${title:-sans-titre}.md"; fi
           done
 
@@ -82,10 +83,13 @@ jobs:
 
           def relink(match, here):
               target = match.group(2)
-              if re.match(r"^([a-z]+:|#|/)", target):
+              if re.match(r"^([a-z]+:|#)", target):
                   return match.group(0)
               path, _, anchor = target.partition("#")
-              new = assets.get(os.path.normpath(os.path.join(here, unquote(path)))) or pages.get(os.path.normpath(os.path.join(here, unquote(path))))
+              if path.startswith("/"):  # /files/… : relatif à la racine de l'export, comme unzip l'a extrait
+                  here, path = src, path.lstrip("/")
+              full = os.path.normpath(os.path.join(here, unquote(path)))
+              new = assets.get(full) or pages.get(full)
               if not new:
                   return match.group(0)
               return match.group(1) + quote(new) + ("#" + anchor if anchor else "") + match.group(3)
