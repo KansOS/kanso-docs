@@ -33,5 +33,3 @@
 - Uniquement des premiers écrans, les plus simples, et pas encore une démarche complète.
 - Un seul téléphone, une seule langue.
 - Effectifs trop petits pour donner des pourcentages.
-
-Les relevés anonymisés et les scripts sont dans le dépôt launcher, dossier `spec/mesures/couverture-2026-10`.
